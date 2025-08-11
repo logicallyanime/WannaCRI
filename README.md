@@ -2,8 +2,10 @@
 
 WannaCRI
 ========
-A (WIP) Python library for parsing, extracting, and generating Criware's various audio and video file formats.
-If you're interested in reading more about USM, you can read my write-up about it [here](https://listed.to/@donmai/24921/criware-s-usm-format-part-1)
+A (WIP) Python library by [donmai-me](https://github.com/donmai-me) for parsing, extracting, and generating Criware's various audio and video file formats.
+If you're interested in reading more about USM, you can read his write-up about it [here](https://listed.to/@donmai/24921/criware-s-usm-format-part-1)
+
+This fork Cythonizes donmai-me's implementation of the encryption/decryption of Video and Audio. This makes the process 10-50x faster.
 
 Support
 =======
