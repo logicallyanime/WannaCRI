@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import math
 import os
 import logging
@@ -302,23 +303,32 @@ class Usm:
         audios = []
         alphas = []
 
+        def save_item(item, sub_output, mode, key):
+            filename = os.path.join(sub_output, item.filename)
+            with open(filename, "wb") as f:
+                buffer = bytearray()
+                for packet in item.stream(mode, key):
+                    buffer.extend(packet if not isinstance(packet, tuple) else packet[0])
+                f.write(buffer)
+            return filename
+
         def save(usm_array, output_array, name, key):
-            if len(usm_array) == 0:
+            
+            if not usm_array:
                 return
 
             logging.info(f"Saving {name}")
             mode = OpMode.NONE if key is None else OpMode.DECRYPT
             sub_output = os.path.join(output, name)
-            if not os.path.exists(sub_output):
-                os.mkdir(sub_output)
+            os.makedirs(sub_output, exist_ok=True)
 
-            for item in usm_array:
-                filename = os.path.join(sub_output, item.filename)
-                with open(filename, "wb") as f:
-                    for packet in item.stream(mode, key):
-                        f.write(packet if type(packet) is not tuple else packet[0])
-
-                output_array.append(filename)
+            with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
+                futures = [
+                    executor.submit(save_item, item, sub_output, mode, key)
+                    for item in usm_array
+                ]
+                for future in futures:
+                    output_array.append(future.result())
 
         if save_video:
             save(self.videos, videos, "videos", self.video_key)

@@ -3,7 +3,7 @@ from typing import Optional, Generator, Tuple, List, Protocol
 from wannacri.usm.types import ChunkType, PayloadType, OpMode
 from wannacri.usm.page import UsmPage, ElementType
 from wannacri.usm.usm import UsmChunk
-from wannacri.usm.tools import (
+from wannacri.usm.tools_cython import (
     encrypt_video_packet,
     decrypt_video_packet,
     slugify,

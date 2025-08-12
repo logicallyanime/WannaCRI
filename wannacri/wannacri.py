@@ -1,207 +1,134 @@
-import logging
-import os
-import argparse
-import pathlib
-import platform
-import shutil
-import string
-import tempfile
-import random
-from typing import List, Optional
+import logging, os, pathlib, platform, shutil, string, tempfile, random, ffmpeg
 
-import ffmpeg
+import typer
+from rich.progress import Progress,SpinnerColumn, TimeElapsedColumn
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from typing import List, Optional
 from pythonjsonlogger import jsonlogger
+from pathlib import Path
 
 import wannacri
 from .codec import Sofdec2Codec
 from .usm import is_usm, Usm, Vp9, H264, HCA, OpMode, generate_keys
 
+app = typer.Typer(help=
+"""[bold]WannaCRI CLI[]"""
+, no_args_is_help=True, add_completion=False, rich_markup_mode="rich")
 
-def create_usm():
-    parser = argparse.ArgumentParser("WannaCRI Create USM", allow_abbrev=False)
-    parser.add_argument(
-        "operation",
-        metavar="operation",
-        type=str,
-        choices=OP_LIST,
-        help="Specify operation.",
-    )
-    parser.add_argument(
-        "input",
-        metavar="input file path",
-        type=existing_file,
-        help="Path to video file.",
-    )
-    parser.add_argument(
-        "-a",
-        "--input_audio",
-        metavar="input audio file path",
-        type=existing_file,
-        default=None,
-        help="Path to audio file.",
-    )
-    parser.add_argument(
-        "-e",
-        "--encoding",
-        type=str,
-        default="shift-jis",
-        help="Character encoding used in creating USM. Defaults to shift-jis.",
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        type=dir_path,
-        default=None,
-        help="Output path. Defaults to the same place as input.",
-    )
-    parser.add_argument(
-        "--ffprobe",
-        type=str,
-        default=".",
-        help="Path to ffprobe executable or directory. Defaults to CWD.",
-    )
-    parser.add_argument(
-        "-k", "--key", type=key, default=None, help="Encryption key for encrypted USMs."
-    )
-    args = parser.parse_args()
+def key_normalize(key_str) -> int:
+    try:
+        return int(key_str, 0)
+    except ValueError:
+        # Try again but this time we prepend a 0x and parse it as a hex
+        key_str = "0x" + key_str
 
-    ffprobe_path = find_ffprobe(args.ffprobe)
+    return int(key_str, 16)
 
-    # TODO: Add support for more video codecs and audio codecs
-    codec = Sofdec2Codec.from_file(args.input)
-    if codec is Sofdec2Codec.VP9:
-        video = Vp9(args.input, ffprobe_path=ffprobe_path)
-    elif codec is Sofdec2Codec.H264:
-        video = H264(args.input, ffprobe_path=ffprobe_path)
-    else:
-        raise NotImplementedError("Non-Vp9/H.264 files are not yet implemented.")
+@app.command(no_args_is_help=True)
+@app.command(no_args_is_help=True)
+def extract_usm(
+    input: str = typer.Argument(..., help="Path to USM file or path."),
+    output: str = typer.Option(
+        "./output", "-o", "--output", help="Output path."
+    ),
+    key: str = typer.Option(
+        None,
+        "-k",
+        "--key",
+        help="Decryption key for encrypted USMs.",
+        callback=key_normalize,
+    ),
+    encoding: str = typer.Option(
+        "shift-jis", "-e", "--encoding", help="Character encoding used in USM."
+    ),
+    pages: bool = typer.Option(
+        False, "-p", "--pages", help="Toggle to save USM pages when extracting."
+    ),
+    workers: int = typer.Option(
+        4, "-w", "--workers", help="Number of threads to use."
+    ),
+):
+    """Extracts a USM or extracts multiple USMs given a path as input."""
 
-    audios = None
-    if args.input_audio:
-        audios = [HCA(args.input_audio)]
+    usmfiles = find_usm(input)
 
-    filename = os.path.splitext(args.input)[0]
-
-    usm = Usm(videos=[video], audios=audios, key=args.key)
-    with open(filename + ".usm", "wb") as f:
-        mode = OpMode.NONE if args.key is None else OpMode.ENCRYPT
-
-        for packet in usm.stream(mode, encoding=args.encoding):
-            f.write(packet)
-
-    print("Done creating USM file.")
-
-
-def extract_usm():
-    """One of the main functions in the command-line program. Extracts a USM or extracts
-    multiple USMs given a path as input."""
-    parser = argparse.ArgumentParser("WannaCRI Extract USM", allow_abbrev=False)
-    parser.add_argument(
-        "operation",
-        metavar="operation",
-        type=str,
-        choices=OP_LIST,
-        help="Specify operation.",
-    )
-    parser.add_argument(
-        "input",
-        metavar="input file/folder",
-        type=existing_path,
-        help="Path to USM file or path.",
-    )
-    parser.add_argument(
-        "-k", "--key", type=key, default=None, help="Decryption key for encrypted USMs."
-    )
-    parser.add_argument(
-        "-e",
-        "--encoding",
-        type=str,
-        default="shift-jis",
-        help="Character encoding used in USM. Defaults to shift-jis.",
-    )
-    parser.add_argument(
-        "-p",
-        "--pages",
-        action="store_const",
-        default=False,
-        const=True,
-        help="Toggle to save USM pages when extracting.",
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        type=dir_path,
-        default="./output",
-        help="Output path. Defaults to a folder named output in CWD.",
-    )
-    args = parser.parse_args()
-
-    usmfiles = find_usm(args.input)
-
-    for i, usmfile in enumerate(usmfiles):
-        filename = os.path.basename(usmfile)
-        print(f"Processing {i+1} of {len(usmfiles)}... ", end="", flush=True)
+    def process_usm(usmfile):
         try:
-            usm = Usm.open(usmfile, encoding=args.encoding, key=args.key)
-
+            usm = Usm.open(usmfile, encoding=encoding, key=key)
             usm.demux(
-                path=args.output,
+                path=output,
                 save_video=True,
                 save_audio=True,
-                save_pages=args.pages,
-                folder_name=filename,
+                save_pages=pages,
+                folder_name=usmfile.parent,
             )
         except ValueError:
             print("ERROR")
             print(f"Please run probe on {usmfile}")
-        else:
-            print("DONE")
 
+    with Progress(
+        SpinnerColumn(),
+        *Progress.get_default_columns(),
+        TimeElapsedColumn(),
+    ) as progress:
+        task = progress.add_task("Processing...", total=len(usmfiles))
 
-def probe_usm():
-    """One of the main functions in the command-line program. Probes a USM or finds
-    multiple USMs and probes them when given a path as input."""
-    parser = argparse.ArgumentParser("WannaCRI Probe USM", allow_abbrev=False)
-    parser.add_argument(
-        "operation",
-        metavar="operation",
-        type=str,
-        choices=OP_LIST,
-        help="Specify operation.",
-    )
-    parser.add_argument(
-        "input",
-        metavar="input file/folder",
-        type=existing_path,
-        help="Path to USM file or path.",
-    )
-    parser.add_argument(
-        "-e",
-        "--encoding",
-        type=str,
-        default="shift-jis",
-        help="Character encoding used in USM. Defaults to shift-jis.",
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        type=dir_path,
-        default="./usmlogs",
-        help="Output path. Defaults to a folder named usmlogs in CWD.",
-    )
-    parser.add_argument(
-        "--ffprobe",
-        type=str,
-        default=".",
-        help="Path to ffprobe executable or directory. Defaults to CWD.",
-    )
-    args = parser.parse_args()
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(process_usm, f): f for f in usmfiles}
 
-    usmfiles = find_usm(args.input)
+            for future in as_completed(futures):
+                _ = futures[future]  # file reference if needed
+                progress.advance(task)
+                
+                   
+@app.command(help="Creates a USM.")
+def create_usm(input: str = typer.Argument(..., help="Path to video file."),
+               input_audio: str = typer.Option(None, help="Path to audio file."),
+               output: str = typer.Option(None, "-o", "--output", help="Output path."),
+               ffprobe: str = typer.Option(".", "-f", "--ffprobe", help="Path to ffprobe executable or directory."),
+               key: str = typer.Option(None, "-k", "--key", help="Encryption key for encrypted USMs.", callback=key_normalize),
+               encoding: str = typer.Option("shift-jis","-e", "--encoding", help="Character encoding used in USM.")
+               ):
+    app.rich_markup_mode
+    ffprobe_path = find_ffprobe(ffprobe)
 
-    os.makedirs(args.output, exist_ok=True)
+    # TODO: Add support for more video codecs and audio codecs
+    codec = Sofdec2Codec.from_file(input)
+    if codec is Sofdec2Codec.VP9:
+        video = Vp9(input, ffprobe_path=ffprobe_path)
+    elif codec is Sofdec2Codec.H264:
+        video = H264(input, ffprobe_path=ffprobe_path)
+    else:
+        raise NotImplementedError("Non-Vp9/H.264 files are not yet implemented.")
+
+    audios = None
+    if input_audio:
+        audios = [HCA(input_audio)]
+
+    filename = os.path.splitext(input)[0]
+
+    usm = Usm(videos=[video], audios=audios, key=key)
+    with open(filename + ".usm", "wb") as f:
+        mode = OpMode.NONE if key is None else OpMode.ENCRYPT
+
+        for packet in usm.stream(mode, encoding=encoding):
+            f.write(packet)
+
+    print("Done creating USM file.")
+
+@app.command(help="One of the main functions in the command-line program. Probes a USM or finds multiple USMs and probes them when given a path as input.",no_args_is_help=True)
+def probe_usm( input: str = typer.Argument(..., help="Path to video file."),
+               output: str = typer.Option(None, "-o", "--output", help="Output path."),
+               ffprobe: str = typer.Option(".", "-f", "--ffprobe", help="Path to ffprobe executable or directory."),
+               encoding: str = typer.Option("shift-jis","-e", "--encoding", help="Character encoding used in USM.")
+               ):
+
+    usmfiles = find_usm(input)
+
+    os.makedirs(output, exist_ok=True)
     temp_dir = tempfile.mkdtemp()
-    ffprobe_path = find_ffprobe(args.ffprobe)
+    ffprobe_path = find_ffprobe(ffprobe)
 
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
@@ -220,7 +147,7 @@ def probe_usm():
 
         filename = os.path.basename(usmfile)
         random_str = "".join(random.choices(string.ascii_letters + string.digits, k=3))
-        logname = os.path.join(args.output, f"{filename}_{random_str}.log")
+        logname = os.path.join(output, f"{filename}_{random_str}.log")
 
         # Initialize logger
         file_handler = logging.FileHandler(logname, "w", encoding="UTF-8")
@@ -233,7 +160,7 @@ def probe_usm():
         logging.info(
             "Info",
             extra={
-                "path": usmfile.replace(args.input, ""),
+                "path": usmfile.replace(input, ""),
                 "version": wannacri.__version__,
                 "os": f"{platform.system()} {platform.release()}",
                 "is_local_ffprobe": ffprobe_path is not None,
@@ -241,7 +168,7 @@ def probe_usm():
         )
 
         try:
-            usm = Usm.open(usmfile, encoding=args.encoding)
+            usm = Usm.open(usmfile, encoding=encoding)
         except ValueError:
             logging.exception("Error occurred in parsing usm file")
             continue
@@ -314,75 +241,28 @@ def probe_usm():
             shutil.rmtree(os.path.join(temp_dir, filename))
 
     shutil.rmtree(temp_dir)
-    print(f'Probe complete. All logs are stored in "{args.output}" folder')
+    print(f'Probe complete. All logs are stored in "{output}" folder')
 
-
-def encrypt_usm():
-    parser = argparse.ArgumentParser("WannaCRI Encrypt USM/s", allow_abbrev=False)
-    parser.add_argument(
-        "operation",
-        metavar="operation",
-        type=str,
-        choices=OP_LIST,
-        help="Specify operation.",
-    )
-    parser.add_argument(
-        "input",
-        metavar="input file path",
-        type=existing_path,
-        help="Path to usm file or directory of usm files.",
-    )
-    parser.add_argument(
-        "key", type=key, help="Encryption key."
-    )
-    parser.add_argument(
-        "-e",
-        "--encoding",
-        type=str,
-        default="shift-jis",
-        help="Character encoding used in creating USM. Defaults to shift-jis.",
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        type=dir_path,
-        default=None,
-        help="Output path. Defaults to the same place as input.",
-    )
-    args = parser.parse_args()
-
-    outdir = dir_or_parent_dir(args.input) if args.output is None else pathlib.Path(args.output)
-    usmfiles = find_usm(args.input)
+@app.command(help="WannaCRI Encrypt USM/s", no_args_is_help=True)
+def encrypt_usm(
+    input: str = typer.Argument(..., help="Path to USM file or path."),
+    output: str = typer.Option(None, "-o", "--output", help="Output path."),
+    key: str = typer.Option(None, "-k", "--key", help="Encryption key", callback=key_normalize),
+    encoding: str = typer.Option("shift-jis", "-e", "--encoding", help="Character encoding used in USM."),
+    ):
+    outdir = dir_or_parent_dir(input) if output is None else pathlib.Path(output)
+    usmfiles = find_usm(input)
 
     for filepath in usmfiles:
         filename = pathlib.PurePath(filepath).name
         usm = Usm.open(filepath)
-        usm.video_key, usm.audio_key = generate_keys(args.key)
+        usm.video_key, usm.audio_key = generate_keys(key)
         with open(outdir.joinpath(filename), "wb") as out:
-            for packet in usm.stream(OpMode.ENCRYPT, encoding=args.encoding):
+            for packet in usm.stream(OpMode.ENCRYPT, encoding=encoding):
                 out.write(packet)
 
 
-OP_DICT = {"extractusm": extract_usm, "createusm": create_usm, "probeusm": probe_usm, "encryptusm": encrypt_usm}
-OP_LIST = list(OP_DICT.keys())
-
-
-def main():
-    parser = argparse.ArgumentParser("WannaCRI command line", allow_abbrev=False)
-    parser.add_argument(
-        "operation",
-        metavar="operation",
-        type=str,
-        choices=OP_LIST,
-        help="Specify operation",
-    )
-    args, _ = parser.parse_known_args()
-    print(f"WannaCRI {wannacri.__version__}")
-
-    OP_DICT[args.operation]()
-
-
-def find_usm(directory: str) -> List[str]:
+def find_usm(directory: str) -> List[Path]:
     """Walks a path to find USMs."""
     if os.path.isfile(directory):
         with open(directory, "rb") as test:
@@ -393,12 +273,11 @@ def find_usm(directory: str) -> List[str]:
 
     print("Finding USM files... ", end="", flush=True)
     usmfiles = []
-    for path, _, files in os.walk(directory):
-        for f in files:
-            filepath = os.path.join(path, f)
-            with open(filepath, "rb") as test:
-                if is_usm(test.read(4)):
-                    usmfiles.append(filepath)
+    files = list(Path(directory).glob('*.usm'))
+    for f in files:
+        with open(f, "rb") as test:
+            if is_usm(test.read(4)):
+                usmfiles.append(f)
 
     print(f"Found {len(usmfiles)}")
     return usmfiles
@@ -420,14 +299,7 @@ def find_ffprobe(path: str) -> Optional[str]:
                 return os.path.abspath(os.path.join(path, "ffprobe.exe"))
 
 
-def key(key_str) -> int:
-    try:
-        return int(key_str, 0)
-    except ValueError:
-        # Try again but this time we prepend a 0x and parse it as a hex
-        key_str = "0x" + key_str
 
-    return int(key_str, 16)
 
 
 def existing_path(path) -> str:
@@ -460,3 +332,9 @@ def dir_or_parent_dir(path) -> pathlib.Path:
         return path.parent.resolve()
 
     return path
+
+def main():
+    app()
+
+if __name__ == "__main__":
+  app()

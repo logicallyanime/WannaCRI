@@ -1,7 +1,27 @@
-from setuptools import setup
+from setuptools import setup, Extension
+from setuptools.command.build_ext import build_ext
+import os
 
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
+    
+try:
+    from Cython.Build import cythonize
+    USE_CYTHON = True
+except ImportError:
+    USE_CYTHON = False
+    
+ext = ".pyx" if USE_CYTHON else ".c"
+
+extensions = [
+    Extension(
+        "wannacri.usm.tools_cython",
+        [os.path.join("wannacri", "usm", "tools_cython" + ext)]
+    )
+]
+
+if USE_CYTHON:
+    extensions = cythonize(extensions, compiler_directives={"language_level": "3"})
 
 setup(
     name="WannaCRI",
@@ -10,6 +30,7 @@ setup(
     long_description_content_type="text/markdown",
     author="donmai",
     url="https://github.com/donmai-me/WannaCRI",
+    ext_modules=extensions,
     classifiers=[
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.8",

@@ -5,3 +5,10 @@ dist/
 *.usm
 *.dat
 *.ivf
+.vscode/launch.json
+.vscode/settings.json
+.vscode/tasks.json
+wannacri/__pycache__
+wannacri/usm/__pycache__
+wannacri/usm/media/__pycache__
+wannacri/usm/tools_cython.*.pyd
