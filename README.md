@@ -1,4 +1,3 @@
-[![Version](https://img.shields.io/pypi/v/wannacri.svg)](https://pypi.org/project/WannaCRI)
 
 WannaCRI
 ========
@@ -39,17 +38,32 @@ A working FFmpeg and FFprobe installation. On Windows, you can download official
 
 This project heavily uses the [ffmpeg-python](https://pypi.org/project/ffmpeg-python) wrapper. And uses [python-json-logger](https://pypi.org/project/python-json-logger) for logging.
 
+Installation
+============
+
+`pip install git+https://github.com/logicallyanime/WannaCRI.git`
+
 Usage
 =====
 If installed, there should be a command-line tool available.
 
-For extracting USMs:
+```
+ Usage: wannacri [OPTIONS] COMMAND [ARGS]...                                                                                               
+                                                                                                                                           
+ WannaCRI CLI[]
 
-`wannacri extractusm /path/to/usm/file/or/folder --key 0xKEYUSEDIFENCRYPTED`
 
-For creating USMs:
-
-`wannacri createusm /path/to/vp9/file --key 0xKEYIFYOUWANTTOENCRYPT`
+╭─ Options ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                                                             │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ extract-usm   Extracts a USM or extracts multiple USMs given a path as input.                                                           │
+│ create-usm    Creates a USM.                                                                                                            │
+│ probe-usm     One of the main functions in the command-line program. Probes a USM or finds multiple USMs and probes them when given a   │
+│               path as input.                                                                                                            │
+│ encrypt-usm   WannaCRI Encrypt USM/s                                                                                                    │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
 
 Licence
 =======
